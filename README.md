@@ -37,7 +37,7 @@ This is a powerful and robust Python script that automatically compresses a spec
 ### 第 2 步：下载代码和 SDK
 
 1.  克隆或下载本仓库到您的服务器。
-2.  从百度网盘开放平台官网下载 [Python SDK](https://pan.baidu.com/union/doc/al0a2g01s)。
+2.  从百度网盘开放平台官网下载 [Python SDK]([https://pan.baidu.com/union/doc/al0a2g01s](https://pan.baidu.com/union/doc/Kl4gsu388))。
 3.  解压SDK后，将名为 `openapi_client` 的整个文件夹**复制到**本脚本所在的同一目录下。
 
 最终，您的项目目录结构应如下所示：
