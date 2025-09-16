@@ -6,20 +6,14 @@ import tarfile
 import time
 import requests
 import io
-from tqdm import tqdm
+import argparse
+
 # 导入 fileinfo_api 和 filemanager_api
 from openapi_client.api import fileupload_api, fileinfo_api, filemanager_api
 from openapi_client import ApiClient, ApiException
 
 # ==============================================================================
-# ===== 配置区 (您只需要修改这里) =====
-# ==============================================================================
-LOCAL_DIR = "/path/to/your/data/to/backup"
-REMOTE_DIR = "/apps/你的应用名称/backup_folder"
-MAX_BACKUPS = 7
-
-# ==============================================================================
-# ===== 程序核心代码 (以下部分无需修改) =====
+# ===== (✔) 最终 Python 配置区 - 无需任何配置！ =====
 # ==============================================================================
 
 # --- 从环境变量安全地读取密钥 ---
@@ -29,17 +23,10 @@ SECRET_KEY = os.getenv("BAIDU_SECRET_KEY")
 # --- 全局常量 ---
 REDIRECT_URI = "oob"
 CHUNK_SIZE = 4 * 1024 * 1024
-
-# ==============================================================================
-# ===== 最终修正点：确保TOKEN_FILE路径的绝对性 =====
-# ==============================================================================
-# 获取脚本文件自身所在的目录
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-# 将 TOKEN_FILE 定义为脚本同目录下的绝对路径
 TOKEN_FILE = os.path.join(SCRIPT_DIR, "baidu_token.json")
-# ==============================================================================
 
-# ===== Token 管理 =====
+# ===== Token 管理 (无需修改) =====
 def get_access_token():
     if not all([APP_KEY, SECRET_KEY]):
         print("❌ 错误：请先设置系统环境变量 BAIDU_APP_KEY 和 BAIDU_SECRET_KEY")
@@ -93,11 +80,12 @@ def save_token(data):
     with open(TOKEN_FILE, "w") as f: json.dump(data, f, indent=4)
     print("💾 已保存新的 token")
 
-# ===== 上传与备份管理 =====
+# ===== 上传与备份管理 (无需修改) =====
 def md5_bytes(data):
     return hashlib.md5(data).hexdigest()
 
-def get_block_md5_list(path):
+def get_block_md5_list(path, pass_num):
+    print(f"  (第 {pass_num} 遍读取文件...)")
     block_md5_list = []
     with open(path, "rb") as f:
         while True:
@@ -105,7 +93,7 @@ def get_block_md5_list(path):
             if not chunk: break
             block_md5_list.append(md5_bytes(chunk))
     return block_md5_list
-
+    
 def upload_part(api_instance, access_token, remote_path, uploadid, part_index, local_path):
     for attempt in range(3):
         try:
@@ -120,40 +108,55 @@ def upload_part(api_instance, access_token, remote_path, uploadid, part_index, l
                                                file=chunk_fp, _request_timeout=300)
             return
         except ApiException as e:
-            if 400 <= e.status < 500: raise RuntimeError(f"分片 {part_index} 上传失败 (客户端错误 {e.status})，中止: {e.reason}")
-            print(f"⚠️ 分片 {part_index} 上传失败 (API错误)，第 {attempt+1} 次重试: {e.reason}")
+            if 400 <= e.status < 500: raise RuntimeError(f"分片 {part_index + 1} 上传失败 (客户端错误 {e.status})，中止: {e.reason}")
+            print(f"⚠️ 分片 {part_index + 1} 上传失败 (API错误)，第 {attempt+1} 次重试: {e.reason}")
             time.sleep(2 ** attempt)
         except Exception as e:
-            print(f"⚠️ 分片 {part_index} 上传失败 (网络或其他错误)，第 {attempt+1} 次重试: {e}")
+            print(f"⚠️ 分片 {part_index + 1} 上传失败 (网络或其他错误)，第 {attempt+1} 次重试: {e}")
             time.sleep(2 ** attempt)
-    raise RuntimeError(f"❌ 分片 {part_index} 上传失败，已重试 3 次")
+    raise RuntimeError(f"❌ 分片 {part_index + 1} 上传失败，已重试 3 次")
 
 def upload_large_file(api_instance, access_token, local_path, remote_path):
     file_size = os.path.getsize(local_path)
     print(f"文件大小: {file_size / 1024 / 1024:.2f} MB")
+    
+    print("🔬 正在执行文件完整性预飞行自检...")
+    block_md5_list_pass1 = get_block_md5_list(local_path, 1)
+    block_md5_list_pass2 = get_block_md5_list(local_path, 2)
+    if block_md5_list_pass1 != block_md5_list_pass2:
+        raise RuntimeError("本地文件读取不一致，可能存在硬件问题。")
+    print("✅ 文件完整性自检通过。文件在本地是稳定可读的。")
+    block_md5_list = block_md5_list_pass1
+    
+    total_parts = len(block_md5_list)
+    print(f"✅ 文件校验信息计算完成，共 {total_parts} 个分片。")
+
     print("⏳ 正在进行预上传...")
-    block_md5_list = get_block_md5_list(local_path)
-    precreate_resp = api_instance.xpanfileprecreate(access_token=access_token, path=remote_path, size=file_size,
-                                                    isdir=0, autoinit=1, block_list=json.dumps(block_md5_list))
+    precreate_resp = api_instance.xpanfileprecreate(
+        access_token=access_token, path=remote_path, size=file_size,
+        isdir=0, autoinit=1, block_list=json.dumps(block_md5_list)
+    )
     uploadid = precreate_resp.get("uploadid")
     if not uploadid: raise RuntimeError(f"预上传失败: {precreate_resp}")
     print(f"✅ 预上传成功, UploadID: {uploadid}")
+
     print("🚀 开始分片上传...")
-    with tqdm(total=len(block_md5_list), unit="part", desc="上传进度") as pbar:
-        for idx in range(len(block_md5_list)):
-            upload_part(api_instance, access_token, remote_path, uploadid, idx, local_path)
-            pbar.update(1)
+    for idx in range(total_parts):
+        # ==============================================================================
+        # ===== (✔) 核心修正点：注释掉这行打印语句 =====
+        # ==============================================================================
+        # print(f"  > 正在上传分片 {idx + 1}/{total_parts}...") # <--- 注释掉或直接删除这一行
+        upload_part(api_instance, access_token, remote_path, uploadid, idx, local_path)
+    # 我们可以保留一个总的完成提示
+    print("  > 所有分片上传完毕。")
+
     print("🤝 正在合并文件...")
-    create_resp = api_instance.xpanfilecreate(access_token=access_token, path=remote_path, size=file_size,
-                                              isdir=0, uploadid=uploadid, block_list=json.dumps(block_md5_list))
+    create_resp = api_instance.xpanfilecreate(
+        access_token=access_token, path=remote_path, size=file_size,
+        isdir=0, uploadid=uploadid, block_list=json.dumps(block_md5_list)
+    )
     if 'fs_id' not in create_resp: raise RuntimeError(f"合并文件失败: {create_resp}")
     print(f"🎉 文件上传成功! 网盘路径: {create_resp.get('path')}")
-
-def compress_directory(local_dir, output_path):
-    print(f"📦 正在压缩 {local_dir} -> {output_path}")
-    with tarfile.open(output_path, "w:gz") as tar:
-        tar.add(local_dir, arcname=os.path.basename(local_dir))
-    print("压缩完成")
 
 def manage_backups(api_client, access_token, remote_dir, max_backups):
     if max_backups <= 0:
@@ -163,61 +166,76 @@ def manage_backups(api_client, access_token, remote_dir, max_backups):
     print(f"🔄 正在检查旧备份，将只保留最新的 {max_backups} 份...")
     try:
         info_api = fileinfo_api.FileinfoApi(api_client)
-        response = info_api.xpanfilelist(access_token=access_token, dir=remote_dir, order="name", desc=0)
+        response = info_api.xpanfilelist(access_token=access_token, dir=remote_dir)
         
         file_list = response.get('list')
         if not file_list:
             print("⚠️ 未能在备份目录中找到任何文件或目录为空。")
             return
 
-        backup_files = sorted(
-            [f for f in file_list if f.get('path', '').endswith('.tar.gz')],
-            key=lambda x: x['path']
-        )
+        backup_groups = {}
+        for f in file_list:
+            path = f.get('path', '')
+            base_name = '.'.join(os.path.basename(path).split('.')[:-1])
+            if not base_name.endswith('.tar.gz'):
+                base_name = os.path.basename(path)
+            if base_name not in backup_groups:
+                backup_groups[base_name] = []
+            backup_groups[base_name].append(path)
+
+        sorted_groups = sorted(backup_groups.keys())
+        num_groups = len(sorted_groups)
+        num_to_delete = num_groups - max_backups
         
-        num_to_delete = len(backup_files) - max_backups
         if num_to_delete <= 0:
-            print(f"✅ 备份文件数量 ({len(backup_files)}) 未超限，无需清理。")
+            print(f"✅ 备份组数量 ({num_groups}) 未超限，无需清理。")
             return
             
-        print(f"🗑️ 发现 {len(backup_files)} 份备份，需要删除最旧的 {num_to_delete} 份。")
-        files_to_delete = [f['path'] for f in backup_files[:num_to_delete]]
+        print(f"🗑️ 发现 {num_groups} 个备份组，需要删除最旧的 {num_to_delete} 个组。")
+        files_to_delete = []
+        groups_to_delete = sorted_groups[:num_to_delete]
         
+        for group_name in groups_to_delete:
+            files_to_delete.extend(backup_groups[group_name])
+        
+        if not files_to_delete: return
+            
         manager_api = filemanager_api.FilemanagerApi(api_client)
         delete_resp = manager_api.filemanagerdelete(access_token=access_token, _async=0, filelist=json.dumps(files_to_delete))
 
-        print("✅ 已成功删除旧的备份文件：")
-        for f_path in files_to_delete:
-            print(f"   - {os.path.basename(f_path)}")
+        print("✅ 已成功删除旧的备份文件/组：")
+        for group_name in groups_to_delete:
+            print(f"   - {group_name} (及所有分卷)")
 
     except ApiException as e:
         print(f"❌ 管理备份文件时发生API错误: {e.reason}")
     except Exception as e:
         print(f"❌ 管理备份文件时发生未知错误: {e}")
 
-# ===== 主流程 =====
+# ===== 主流程 (无需修改) =====
 if __name__ == "__main__":
-    if not os.path.isdir(LOCAL_DIR):
-        print(f"❌ 错误: 本地目录 '{LOCAL_DIR}' 不存在或不是一个目录。")
+    parser = argparse.ArgumentParser(description="Uploads a file to Baidu Netdisk and manages backups.")
+    parser.add_argument("--tar-path", required=True, help="The absolute path to the file/volume to be uploaded.")
+    parser.add_argument("--remote-dir", required=True, help="The target directory in Baidu Netdisk (must start with /apps/).")
+    parser.add_argument("--max-backups", required=True, type=int, help="Maximum number of backup sets to keep (0 for unlimited).")
+    args = parser.parse_args()
+
+    local_tar_path = args.tar_path
+    remote_dir = args.remote_dir
+    max_backups = args.max_backups
+
+    if not os.path.isfile(local_tar_path):
+        print(f"❌ 错误: Shell脚本提供的文件路径不存在: '{local_tar_path}'")
         exit(1)
-    
-    tar_filename = f"{os.path.basename(LOCAL_DIR.rstrip(os.sep))}_{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
-    local_tar_path = os.path.join(os.path.dirname(LOCAL_DIR.rstrip(os.sep)), tar_filename)
 
     try:
         access_token = get_access_token()
-        compress_directory(LOCAL_DIR, local_tar_path)
-        
         with ApiClient() as api_client:
             upload_api_instance = fileupload_api.FileuploadApi(api_client)
-            remote_tar_path = os.path.join(REMOTE_DIR, os.path.basename(local_tar_path)).replace("\\", "/")
+            remote_tar_path = os.path.join(remote_dir, os.path.basename(local_tar_path)).replace("\\", "/")
             
             upload_large_file(upload_api_instance, access_token, local_tar_path, remote_tar_path)
-            manage_backups(api_client, access_token, REMOTE_DIR, MAX_BACKUPS)
-
+            manage_backups(api_client, access_token, remote_dir, max_backups)
     except Exception as e:
         print(f"\n❌ 执行过程中发生严重错误: {e}")
-    finally:
-        if 'local_tar_path' in locals() and os.path.exists(local_tar_path):
-            print(f"🧹 删除本地临时压缩文件: {local_tar_path}")
-            os.remove(local_tar_path)
+        exit(1)
