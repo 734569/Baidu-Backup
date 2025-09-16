@@ -14,16 +14,8 @@ from openapi_client import ApiClient, ApiException
 # ==============================================================================
 # ===== 配置区 (您只需要修改这里) =====
 # ==============================================================================
-
-# 1. 要备份的本地目录 (请使用绝对路径)
 LOCAL_DIR = "/path/to/your/data/to/backup"
-
-# 2. 要上传到的网盘目录 (必须以 /apps/ 开头)
 REMOTE_DIR = "/apps/你的应用名称/backup_folder"
-
-# 3. 最大保留的备份文件数量
-#    - 设置为 7，表示每次备份成功后，网盘里最多只保留最新的 7 个备份文件。
-#    - 设置为 0，表示不限制数量，保留所有备份。
 MAX_BACKUPS = 7
 
 # ==============================================================================
@@ -36,8 +28,16 @@ SECRET_KEY = os.getenv("BAIDU_SECRET_KEY")
 
 # --- 全局常量 ---
 REDIRECT_URI = "oob"
-TOKEN_FILE = "baidu_token.json"
 CHUNK_SIZE = 4 * 1024 * 1024
+
+# ==============================================================================
+# ===== 最终修正点：确保TOKEN_FILE路径的绝对性 =====
+# ==============================================================================
+# 获取脚本文件自身所在的目录
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+# 将 TOKEN_FILE 定义为脚本同目录下的绝对路径
+TOKEN_FILE = os.path.join(SCRIPT_DIR, "baidu_token.json")
+# ==============================================================================
 
 # ===== Token 管理 =====
 def get_access_token():
@@ -184,10 +184,6 @@ def manage_backups(api_client, access_token, remote_dir, max_backups):
         files_to_delete = [f['path'] for f in backup_files[:num_to_delete]]
         
         manager_api = filemanager_api.FilemanagerApi(api_client)
-        
-        # ==============================================================================
-        # ===== 最终错误修正点 (async_ -> _async) =====
-        # ==============================================================================
         delete_resp = manager_api.filemanagerdelete(access_token=access_token, _async=0, filelist=json.dumps(files_to_delete))
 
         print("✅ 已成功删除旧的备份文件：")
