@@ -22,12 +22,19 @@ SECRET_KEY = os.getenv("BAIDU_SECRET_KEY")
 
 # --- 全局常量 ---
 REDIRECT_URI = "oob"
-CHUNK_SIZE = 4 * 1024 * 1024
+CHUNK_SIZE = 4 * 1024 * 1024  # 4MB分片大小
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 TOKEN_FILE = os.path.join(SCRIPT_DIR, "baidu_token.json")
 
-# ===== Token 管理 (无需修改) =====
+# ===== Token 管理 (保留环境变量优先逻辑) =====
 def get_access_token():
+    # 优先读取环境变量令牌
+    env_token = os.getenv("BAIDU_ACCESS_TOKEN")
+    if env_token and env_token.strip():
+        print("✅ 使用环境变量提供的 access_token")
+        return env_token.strip()
+    
+    # 原有逻辑：环境变量无令牌时才使用本地文件或重新授权
     if not all([APP_KEY, SECRET_KEY]):
         print("❌ 错误：请先设置系统环境变量 BAIDU_APP_KEY 和 BAIDU_SECRET_KEY")
         exit(1)
@@ -80,12 +87,12 @@ def save_token(data):
     with open(TOKEN_FILE, "w") as f: json.dump(data, f, indent=4)
     print("💾 已保存新的 token")
 
-# ===== 上传与备份管理 (无需修改) =====
+# ===== 上传与备份管理 (移除预飞行自检) =====
 def md5_bytes(data):
     return hashlib.md5(data).hexdigest()
 
-def get_block_md5_list(path, pass_num):
-    print(f"  (第 {pass_num} 遍读取文件...)")
+# 优化：只读取一次文件计算MD5，提高效率
+def get_block_md5_list(path):
     block_md5_list = []
     with open(path, "rb") as f:
         while True:
@@ -120,14 +127,9 @@ def upload_large_file(api_instance, access_token, local_path, remote_path):
     file_size = os.path.getsize(local_path)
     print(f"文件大小: {file_size / 1024 / 1024:.2f} MB")
     
-    print("🔬 正在执行文件完整性预飞行自检...")
-    block_md5_list_pass1 = get_block_md5_list(local_path, 1)
-    block_md5_list_pass2 = get_block_md5_list(local_path, 2)
-    if block_md5_list_pass1 != block_md5_list_pass2:
-        raise RuntimeError("本地文件读取不一致，可能存在硬件问题。")
-    print("✅ 文件完整性自检通过。文件在本地是稳定可读的。")
-    block_md5_list = block_md5_list_pass1
-    
+    # 【移除预飞行自检】直接计算一次MD5
+    print("🔬 计算文件校验信息...")
+    block_md5_list = get_block_md5_list(local_path)
     total_parts = len(block_md5_list)
     print(f"✅ 文件校验信息计算完成，共 {total_parts} 个分片。")
 
@@ -142,12 +144,7 @@ def upload_large_file(api_instance, access_token, local_path, remote_path):
 
     print("🚀 开始分片上传...")
     for idx in range(total_parts):
-        # ==============================================================================
-        # ===== (✔) 核心修正点：注释掉这行打印语句 =====
-        # ==============================================================================
-        # print(f"  > 正在上传分片 {idx + 1}/{total_parts}...") # <--- 注释掉或直接删除这一行
         upload_part(api_instance, access_token, remote_path, uploadid, idx, local_path)
-    # 我们可以保留一个总的完成提示
     print("  > 所有分片上传完毕。")
 
     print("🤝 正在合并文件...")
@@ -212,7 +209,7 @@ def manage_backups(api_client, access_token, remote_dir, max_backups):
     except Exception as e:
         print(f"❌ 管理备份文件时发生未知错误: {e}")
 
-# ===== 主流程 (无需修改) =====
+# ===== 主流程 =====
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Uploads a file to Baidu Netdisk and manages backups.")
     parser.add_argument("--tar-path", required=True, help="The absolute path to the file/volume to be uploaded.")
